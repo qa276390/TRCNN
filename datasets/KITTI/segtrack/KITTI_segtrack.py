@@ -13,7 +13,7 @@ import os
 
 NAME = "KITTI_segtrack"
 NAME_DETECTION = "KITTI_segtrack_detection"
-DEFAULT_PATH = "/globalwork/" + username() + "/data/KITTI_MOTS/train/"
+DEFAULT_PATH = "/home/vtsai01/workspace/TrackR-CNN/data/KITTI_MOTS/train/"
 ID_DIVISOR = 1000
 CLASS_IDS_WITH_INSTANCES = [1, 2]
 CROWD_ID = 10

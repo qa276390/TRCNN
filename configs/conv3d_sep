@@ -14,7 +14,7 @@
   "add_masks": true,
 
   # Pretrained model from tensorpack
-  "load_init": "/globalwork/krause/pretrained_models/tensorpack/PReMVOS-COCO-Mapillary-PreProcForKITTISegtrack/converted",
+  "load_init": "~/workspace/TrackR-CNN/models/converted",
   # Freeze applies to the whole model, not just our backend, but that's fine since only the backend uses batchnorm
   "freeze_batchnorm": true,
   "max_saves_to_keep": 1,
@@ -27,8 +27,8 @@
   "max_saves_to_keep": 1,
 
   # Dataset options
-  "KITTI_segtrack_data_dir": "/globalwork/krause/data/KITTI_MOTS/train/",
-  "MOTS_segtrack_data_dir": "/globalwork/krause/data/MOTS_challenge/train/",
+  "KITTI_segtrack_data_dir": "~/workspace/TrackR-CNN/data/KITTI_MOTS/train/",
+  "MOTS_segtrack_data_dir": "~/workspace/TrackR-CNN/data/MOTS_challenge/train/",
   "optical_flow_path": "/globalwork/krause/data/KITTI_flow_pwc/",
   "prefer_gt_to_ignore": true,
   "use_ioa_for_ignore": true,
