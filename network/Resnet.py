@@ -76,6 +76,10 @@ def add_resnet_conv5(image, tower_setup):
   c5 = resnet_group(image, 'group3', 512, 3, 2, tower_setup)
   return [c5]
 
+def add_resnet_conv5_(image, tower_setup):
+  c5_ = resnet_group(image, 'group3_', 512, 3, 2, tower_setup)
+  return [c5_]
+
 
 # See also savitar1
 class ResNet(Layer):

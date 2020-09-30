@@ -4,12 +4,13 @@
 import tensorflow as tf
 import numpy as np
 from functools import partial
+import inspect
 
 from datasets import DataKeys
 from network.ConvolutionalLayers import Conv, ConvTranspose
 from network.FullyConnected import FullyConnected
 from network.Layer import Layer
-from network.Resnet import add_resnet_conv5
+from network.Resnet import add_resnet_conv5, add_resnet_conv5_
 from core import Measures, Extractions
 from network.FasterRCNN_utils import decode_bbox_target, encode_bbox_target,\
   generate_rpn_proposals, sample_fast_rcnn_targets, roi_align, rpn_losses,\
@@ -50,7 +51,9 @@ def fastrcnn_head(feature, num_classes, reid_dim, tower_setup, reid_per_class=Fa
                                     activation="linear",
                                     W_initializer=tf.random_normal_initializer(stddev=0.001)).outputs[0]
     box_regression = tf.reshape(box_regression, (-1, num_hidden_box, 4))
-
+    
+    reid_features = 0.0
+    """
     if reid_dim > 0:
       if reid_per_class:
         reid_features = \
@@ -63,12 +66,36 @@ def fastrcnn_head(feature, num_classes, reid_dim, tower_setup, reid_per_class=Fa
         reid_features = FullyConnected("reid", [feature], reid_dim, tower_setup, activation="linear").outputs[0]
     else:
       reid_features = None
+    """
+  
     return classification, box_regression, reid_features
+
+def reid_head(feature, num_classes, reid_dim, tower_setup, reid_per_class=False, class_agnostic_box=False):
+  with tf.variable_scope('reid'):
+    # GlobalAvgPooling, see https://tensorpack.readthedocs.io/en/latest/_modules/tensorpack/models/pool.html
+    assert feature.shape.ndims == 4
+    feature = tf.reduce_mean(feature, [1, 2], name='gap/output')
+    """"""
+    if reid_dim > 0:
+      if reid_per_class:
+        reid_features = \
+          FullyConnected("reid", [feature], (num_classes - 1) * reid_dim, tower_setup, activation="linear").outputs[0]
+        reid_features = tf.reshape(reid_features, (-1, (num_classes - 1), reid_dim))
+        best_class = tf.cast(tf.argmax(classification, axis=-1) - 1, dtype=tf.int32)
+        feature_indices = tf.stack([tf.range(tf.shape(best_class)[0], dtype=tf.int32), best_class], axis=1)
+        reid_features = tf.gather_nd(reid_features, feature_indices)
+      else:
+        reid_features = FullyConnected("reid", [feature], reid_dim, tower_setup, activation="linear").outputs[0]
+    else:
+      reid_features = None
+    """"""
+    return reid_features
 
 
 def maskrcnn_head(feature, num_class, tower_setup, class_agnostic_conv=False):
   with tf.variable_scope('maskrcnn'):
     # c2's MSRAFill is fan_out
+
     l = ConvTranspose('deconv', [feature], 256, tower_setup, (2, 2), strides=(2, 2), bias=True,
                       W_initializer=tf.variance_scaling_initializer(scale=2.0, mode='fan_out',
                                                                     distribution='truncated_normal')).outputs[0]
@@ -213,7 +240,7 @@ class FasterRCNN(Layer):
       reid_loss = create_reid_loss(reid_features_and_target_ids_per_time, self._reid_loss_per_class,
                                    self._reid_loss_worst_examples_percent, self._reid_loss_variant,
                                    self._reid_loss_factor, self._reid_measure, self._reid_adjacent_frames,
-                                   self._reid_loss_margin)
+                                   self._reid_loss_margin) # just masked the input here? @vtsai01
       losses.append(reid_loss)
       self.add_scalar_summary(reid_loss, "reid_loss")
 
@@ -292,21 +319,39 @@ class FasterRCNN(Layer):
       # use all proposal boxes in inference
       boxes_on_featuremap = proposal_boxes * (1.0 / ANCHOR_STRIDE)
 
+    """UNDER TESTING""""""
     fastrcnn_box_logits, fastrcnn_label_logits, feature_fastrcnn, reid_features = self._create_fastrcnn_output(
+      boxes_on_featuremap, rpn_input)
+    """"""UNDER TESTING"""
+    fastrcnn_box_logits, fastrcnn_label_logits, feature_fastrcnn, reid_features_legacy  = self._create_fastrcnn_output(
       boxes_on_featuremap, rpn_input)
 
     if self.is_training:
       #tf.add_to_collection('checkpoints', fastrcnn_box_logits)
       #tf.add_to_collection('checkpoints', fastrcnn_label_logits)
       #tf.add_to_collection('checkpoints', feature_fastrcnn)
-      fastrcnn_box_loss, fastrcnn_label_loss, mrcnn_loss, rpn_box_loss, rpn_label_loss = self._create_losses(
-        featuremap_labels, featuremap_boxes, fm_anchors, fm_shape, fastrcnn_box_logits, fastrcnn_label_logits,
+      """
+        When training, we have to generate reid_features in function _create_losses().
+      """
+      #fastrcnn_box_loss, fastrcnn_label_loss, mrcnn_loss, rpn_box_loss, rpn_label_loss = self._create_losses(
+      #  boxes_on_featuremap, rpn_input, featuremap_labels, featuremap_boxes, fm_anchors, fm_shape, fastrcnn_box_logits, fastrcnn_label_logits,
+      #  feature_fastrcnn, fg_inds_wrt_gt, gt_boxes, gt_masks, rcnn_labels, rcnn_sampled_boxes, rpn_box_logits,
+      #  rpn_label_logits)
+      fastrcnn_box_loss, fastrcnn_label_loss, mrcnn_loss, rpn_box_loss, rpn_label_loss, reid_features = self._create_losses(
+        boxes_on_featuremap, rpn_input, featuremap_labels, featuremap_boxes, fm_anchors, fm_shape, fastrcnn_box_logits, fastrcnn_label_logits,
         feature_fastrcnn, fg_inds_wrt_gt, gt_boxes, gt_masks, rcnn_labels, rcnn_sampled_boxes, rpn_box_logits,
         rpn_label_logits)
+        
+
       final_boxes, final_labels, final_masks, final_probs, final_reid_features = None, None, None, None, None
     else:
-      final_boxes, final_labels, final_masks, final_probs, final_reid_features = self._create_final_outputs(
-        batch_idx, rpn_input, fastrcnn_box_logits, fastrcnn_label_logits, proposal_boxes, reid_features)
+      """
+        When inference, we generate  reid_features in function _create_final_outputs.
+      """
+      #final_boxes, final_labels, final_masks, final_probs, final_reid_features = self._create_final_outputs(
+      #  batch_idx, rpn_input, fastrcnn_box_logits, fastrcnn_label_logits, proposal_boxes, reid_features)
+      final_boxes, final_labels, final_masks, final_probs, final_reid_features, reid_features = self._create_final_outputs(
+        boxes_on_featuremap, batch_idx, rpn_input, fastrcnn_box_logits, fastrcnn_label_logits, proposal_boxes, rcnn_labels)
       fastrcnn_box_loss, fastrcnn_label_loss, mrcnn_loss, rpn_box_loss, rpn_label_loss = None, None, None, None, None
 
     return final_boxes, final_labels, final_masks, final_probs, reid_features, rcnn_target_ids, final_reid_features, \
@@ -316,10 +361,12 @@ class FasterRCNN(Layer):
     roi_resized = roi_align(rpn_input, boxes_on_featuremap, 14)
 
     def ff_true():
+      #print('roi_resized', roi_resized)
       feature_fastrcnn_ = add_resnet_conv5(roi_resized, self.tower_setup)[0]
       fastrcnn_label_logits_, fastrcnn_box_logits_, fastrcnn_reid_features_ = fastrcnn_head(
         feature_fastrcnn_, self._num_classes, self._reid_dimension, self.tower_setup, self._reid_per_class,
         class_agnostic_box=self.class_agnostic_box_and_mask_heads)
+      #print("1.1 fastrcnn_reid_features_", fastrcnn_reid_features_)
       if self._do_reid:
         return feature_fastrcnn_, fastrcnn_label_logits_, fastrcnn_box_logits_, fastrcnn_reid_features_
       else:
@@ -335,14 +382,17 @@ class FasterRCNN(Layer):
 
     feature_fastrcnn, fastrcnn_label_logits, fastrcnn_box_logits, *fastrcnn_reid_features = tf.cond(
       tf.size(boxes_on_featuremap) > 0, ff_true, ff_false)
+    #print("1 fastrcnn_reid_features", fastrcnn_reid_features)
+    """
     if len(fastrcnn_reid_features) == 0:
       fastrcnn_reid_features = None
     else:
       assert len(fastrcnn_reid_features) == 1
       fastrcnn_reid_features = fastrcnn_reid_features[0]
-    return fastrcnn_box_logits, fastrcnn_label_logits, feature_fastrcnn, fastrcnn_reid_features
+    """
+    return fastrcnn_box_logits, fastrcnn_label_logits, feature_fastrcnn, None
 
-  def _create_losses(self, featuremap_labels, featuremap_boxes, fm_anchors, fm_shape, fastrcnn_box_logits,
+  def _create_losses(self, boxes_on_featuremap, rpn_input, featuremap_labels, featuremap_boxes, fm_anchors, fm_shape, fastrcnn_box_logits,
                      fastrcnn_label_logits, feature_fastrcnn, fg_inds_wrt_gt, gt_boxes, gt_masks,
                      rcnn_labels, rcnn_sampled_boxes, rpn_box_logits, rpn_label_logits):
     anchor_labels = tf.slice(
@@ -376,23 +426,47 @@ class FasterRCNN(Layer):
       fg_feature = tf.gather(feature_fastrcnn, fg_inds_wrt_sample)
       mask_logits = maskrcnn_head(fg_feature, self._num_classes, self.tower_setup,
                                   class_agnostic_conv=self.class_agnostic_box_and_mask_heads)  # #fg x #cat x 14x14
-
+      
       gt_masks_for_fg = tf.gather(gt_masks, fg_inds_wrt_gt)  # nfg x H x W
       target_masks_for_fg = crop_and_resize(
         tf.expand_dims(gt_masks_for_fg, 3),
         fg_sampled_boxes,
         tf.range(tf.size(fg_inds_wrt_gt)), 14, pad_border=False)  # nfg x 1x14x14
       target_masks_for_fg = tf.squeeze(target_masks_for_fg, 3, 'sampled_fg_mask_targets')
+
+      #print("  *"*10)
+      #print("target_masks_for_fg:", target_masks_for_fg)
+      #print("mask_logit:", mask_logits)
+      """UNDER TESTING..."""
+      if self._do_reid:
+        num_fg = tf.size(fg_labels)
+        indices = tf.stack([tf.range(num_fg), tf.to_int32(fg_labels) - 1], axis=1)
+        mask_logits_ = tf.transpose(mask_logits, [0, 3, 1, 2])
+        mask_logits_ = tf.gather_nd(mask_logits_, indices)  # #fg x 14 x 14
+        #print('.mask_logits_', mask_logits_)
+
+        roi_resized = roi_align(rpn_input, boxes_on_featuremap, 14) # #fg x 14 x 14 x 1024
+        #print('.roi_resized', roi_resized)
+        masked_roi_resized = roi_resized * tf.expand_dims(mask_logits_, -1)
+        #print('.masked_roi_resized', masked_roi_resized)
+
+        feature_fastrcnn_ = add_resnet_conv5_(masked_roi_resized, self.tower_setup)[0]
+        fastrcnn_reid_features = reid_head(
+        feature_fastrcnn_, self._num_classes, self._reid_dimension, self.tower_setup, self._reid_per_class,
+        class_agnostic_box=self.class_agnostic_box_and_mask_heads)
+        #print("2 fastrcnn_reid_features", fastrcnn_reid_features)
+      """...UNDER TESTING"""
+
       mrcnn_loss = maskrcnn_loss(mask_logits, fg_labels, target_masks_for_fg,
                                  class_agnostic=self.class_agnostic_box_and_mask_heads)
       self.add_scalar_summary(mrcnn_loss, "mrcnn_loss")
     else:
       mrcnn_loss = 0.0
 
-    return fastrcnn_box_loss, fastrcnn_label_loss, mrcnn_loss, rpn_box_loss, rpn_label_loss
+    return fastrcnn_box_loss, fastrcnn_label_loss, mrcnn_loss, rpn_box_loss, rpn_label_loss, fastrcnn_reid_features
 
-  def _create_final_outputs(self, batch_idx, rpn_input, fastrcnn_box_logits, fastrcnn_label_logits,
-                            proposal_boxes, reid_features):
+  def _create_final_outputs(self, boxes_on_featuremap, batch_idx, rpn_input, fastrcnn_box_logits, fastrcnn_label_logits,
+                            proposal_boxes, rcnn_labels):
     label_probs = tf.nn.softmax(fastrcnn_label_logits, name='fastrcnn_all_probs')  # #proposal x #Class
     if self.class_agnostic_box_and_mask_heads:
       anchors = tf.tile(tf.expand_dims(proposal_boxes, 1), [1, 1, 1])  # #proposal x #Cat x 4
@@ -437,14 +511,39 @@ class FasterRCNN(Layer):
         else:
           indices = tf.stack([tf.range(tf.size(final_labels)), tf.to_int32(final_labels) - 1], axis=1)
           mask_logits = tf.gather_nd(mask_logits, indices)  # #resultx14x14
-        return tf.sigmoid(mask_logits)
+        return tf.sigmoid(mask_logits), mask_logits
 
-      final_masks = tf.cond(tf.size(final_probs) > 0, f1, lambda: tf.zeros([0, 14, 14]))
+      final_masks, mask_logits = tf.cond(tf.size(final_probs) > 0, f1, lambda: tf.zeros([0, 14, 14]))
       final_masks = tf.identity(final_masks, name='final_masks')
       self.outputs_per_batch_idx[batch_idx].append(final_masks)
+
+
+      """UNDER TESTING..."""
+      if self._do_reid:
+        fg_inds_wrt_sample = tf.reshape(tf.where(rcnn_labels > 0), [-1])  # fg inds w.r.t all samples
+        fg_labels = tf.gather(rcnn_labels, fg_inds_wrt_sample)
+        num_fg = tf.size(fg_labels)
+        indices = tf.stack([tf.range(num_fg), tf.to_int32(fg_labels) - 1], axis=1)
+        mask_logits_ = tf.transpose(mask_logits, [0, 3, 1, 2])
+        mask_logits_ = tf.gather_nd(mask_logits_, indices)  # #fg x 14 x 14
+        #print('.mask_logits_', mask_logits_)
+        roi_resized = roi_align(rpn_input, boxes_on_featuremap, 14) # #fg x 14 x 14 x 1024
+        #print('.roi_resized', roi_resized)
+        masked_roi_resized = roi_resized *  tf.expand_dims(mask_logits_, -1)
+        #print('.masked_roi_resized', masked_roi_resized)
+
+        feature_fastrcnn_ = add_resnet_conv5_(masked_roi_resized, self.tower_setup)[0]
+        fastrcnn_reid_features = reid_head(
+        feature_fastrcnn_, self._num_classes, self._reid_dimension, self.tower_setup, self._reid_per_class,
+        class_agnostic_box=self.class_agnostic_box_and_mask_heads)
+        #print("2 fastrcnn_reid_features", fastrcnn_reid_features)
+        reid_features = fastrcnn_reid_features
+      """...UNDER TESTING"""
+
     else:
       final_masks = None
-
+    
+    
     if self._do_reid:
       final_reid_features = tf.gather(reid_features, pred_indices[:, 0])
       self.outputs_per_batch_idx[batch_idx].append(final_reid_features)
