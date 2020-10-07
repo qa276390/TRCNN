@@ -445,12 +445,14 @@ class FasterRCNN(Layer):
         mask_logits_ = tf.gather_nd(mask_logits_, indices)  # #fg x 14 x 14
         #print('.mask_logits_', mask_logits_)
 
-        roi_resized = roi_align(rpn_input, boxes_on_featuremap, 14) # #fg x 14 x 14 x 1024
+        #roi_resized = roi_align(rpn_input, boxes_on_featuremap, 14) # #fg x 14 x 14 x 1024
         #print('.roi_resized', roi_resized)
-        masked_roi_resized = roi_resized * tf.expand_dims(mask_logits_, -1)
+        #masked_roi_resized = roi_resized * tf.expand_dims(mask_logits_, -1)
         #print('.masked_roi_resized', masked_roi_resized)
 
-        feature_fastrcnn_ = add_resnet_conv5_(masked_roi_resized, self.tower_setup)[0]
+        #feature_fastrcnn_ = add_resnet_conv5_(masked_roi_resized, self.tower_setup)[0]
+        feature_fastrcnn_ = fg_feature
+
         fastrcnn_reid_features = reid_head(
         feature_fastrcnn_, self._num_classes, self._reid_dimension, self.tower_setup, self._reid_per_class,
         class_agnostic_box=self.class_agnostic_box_and_mask_heads)
@@ -466,7 +468,7 @@ class FasterRCNN(Layer):
     return fastrcnn_box_loss, fastrcnn_label_loss, mrcnn_loss, rpn_box_loss, rpn_label_loss, fastrcnn_reid_features
 
   def _create_final_outputs(self, boxes_on_featuremap, batch_idx, rpn_input, fastrcnn_box_logits, fastrcnn_label_logits,
-                            proposal_boxes, rcnn_labels):
+                            proposal_boxes, rcnn_labels, feature_fastrcnn):
     label_probs = tf.nn.softmax(fastrcnn_label_logits, name='fastrcnn_all_probs')  # #proposal x #Class
     if self.class_agnostic_box_and_mask_heads:
       anchors = tf.tile(tf.expand_dims(proposal_boxes, 1), [1, 1, 1])  # #proposal x #Cat x 4
@@ -522,17 +524,20 @@ class FasterRCNN(Layer):
       if self._do_reid:
         fg_inds_wrt_sample = tf.reshape(tf.where(rcnn_labels > 0), [-1])  # fg inds w.r.t all samples
         fg_labels = tf.gather(rcnn_labels, fg_inds_wrt_sample)
+        fg_feature = tf.gather(feature_fastrcnn, fg_inds_wrt_sample)
         num_fg = tf.size(fg_labels)
         indices = tf.stack([tf.range(num_fg), tf.to_int32(fg_labels) - 1], axis=1)
         mask_logits_ = tf.transpose(mask_logits, [0, 3, 1, 2])
         mask_logits_ = tf.gather_nd(mask_logits_, indices)  # #fg x 14 x 14
         #print('.mask_logits_', mask_logits_)
-        roi_resized = roi_align(rpn_input, boxes_on_featuremap, 14) # #fg x 14 x 14 x 1024
+        #roi_resized = roi_align(rpn_input, boxes_on_featuremap, 14) # #fg x 14 x 14 x 1024
         #print('.roi_resized', roi_resized)
-        masked_roi_resized = roi_resized *  tf.expand_dims(mask_logits_, -1)
+        #masked_roi_resized = roi_resized *  tf.expand_dims(mask_logits_, -1)
         #print('.masked_roi_resized', masked_roi_resized)
 
-        feature_fastrcnn_ = add_resnet_conv5_(masked_roi_resized, self.tower_setup)[0]
+        #feature_fastrcnn_ = add_resnet_conv5_(masked_roi_resized, self.tower_setup)[0]
+        feature_fastrcnn = fg_feature
+
         fastrcnn_reid_features = reid_head(
         feature_fastrcnn_, self._num_classes, self._reid_dimension, self.tower_setup, self._reid_per_class,
         class_agnostic_box=self.class_agnostic_box_and_mask_heads)
@@ -581,6 +586,8 @@ class FasterRCNN(Layer):
 def create_reid_loss(reid_features_and_target_ids_per_time, reid_loss_per_class,
                      reid_loss_worst_examples_percent, loss_variant, loss_factor, distance_measure, adjacent_frames,
                      reid_loss_margin):
+  print("="*100)
+  print('create_reid_loss/reid_features_and_target_ids_per_time', reid_features_and_target_ids_per_time)
   if loss_variant == 0:
     assert False, "Sigmoid cross-entropy loss with adjacent frames was dropped"
   assert reid_loss_worst_examples_percent == 1.0, "Hard mining currently not implemented"
@@ -633,6 +640,7 @@ def create_reid_loss(reid_features_and_target_ids_per_time, reid_loss_per_class,
     reid_loss_per_id_fn = partial(id_fun, computed_measure=computed_measure,
                                   target_ids_axis_0=all_target_ids, target_ids_axis_1=all_target_ids)
     unique_target_ids, _ = tf.unique(all_target_ids)
+    print("unique_target_ids", unique_target_ids)
     reid_losses_per_id, normalization_per_id = tf.map_fn(reid_loss_per_id_fn, unique_target_ids,
                                                          dtype=(tf.float32, tf.int32))
     reid_loss = tf.reduce_sum(reid_losses_per_id, axis=0)

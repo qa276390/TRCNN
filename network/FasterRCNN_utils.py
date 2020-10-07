@@ -296,7 +296,8 @@ def crop_and_resize(image, boxes, box_ind, crop_size, pad_border=True):
 
 
 def roi_align(featuremap, boxes, output_shape):
-  """
+  """ROI(Region of Interest) Alignment
+
   Args:
       featuremap: 1xHxWxC
       boxes: Nx4 floatbox
